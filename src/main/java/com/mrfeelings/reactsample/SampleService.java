@@ -3,9 +3,9 @@ package com.mrfeelings.reactsample;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 import javax.ws.rs.Consumes;
@@ -20,8 +20,8 @@ import javax.ws.rs.QueryParam;
 import javax.ws.rs.core.Context;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
-import javax.ws.rs.core.UriInfo;
 import javax.ws.rs.core.Response.Status;
+import javax.ws.rs.core.UriInfo;
 import javax.ws.rs.core.Variant;
 
 import org.apache.log4j.Logger;
@@ -36,9 +36,9 @@ public class SampleService {
 
   @Context
   private UriInfo _uriInfo;
-  
+
   private static AtomicLong ID_SEQUENCE;
-  private static Map<Long, JsonType> STATE = new LinkedHashMap<>();
+  private static Map<Long, JsonType> STATE = new ConcurrentSkipListMap<>();
 
   // set initial data
   static {
@@ -127,7 +127,7 @@ public class SampleService {
       return Response.notAcceptable(Collections.<Variant>emptyList()).build();
     }
   }
-  
+
   @DELETE
   @Path("{id}")
   public Response deleteById(@PathParam("id") long id) {

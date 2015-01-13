@@ -9,52 +9,69 @@ var ServiceUrl = window.location.href + "service/sample";
 // Primary Rendering Components
 //**************************************************
 
-var doRecord = function(title, value, opFunction) {
-  var div = document.createElement("div");
-  var form = document.createElement("form");
-  var input = document.createElement("textarea");
-  input.cols = "50";
-  input.rows = "10";
-  input.value = value;
-  form.appendChild(input);
-  div.appendChild(form);
-  jQuery(div).dialog({
-    title: title,
-    modal: true,
-    width: "60%",
-    buttons:
-      [{
-        text: "OK",
-        click: function() {
-          var value = jQuery(this).find("textarea").val();
-          try {
-            value = JSON.parse(value);
-          }
-          catch (e) {
-            alert("JSON not properly formatted.\n\n" + e + "\n\nPlease try again.");
-            return;
-          }
-          jQuery(this).dialog("close");
-          opFunction(value);
-        }
-      },{
-        text: "Cancel",
-        click: function() {
-          jQuery(this).dialog("close");
-        }
-      }]
-  });
-}
+// singleton helper module
+var ComponentUtil = (function() {
 
+  // public method
+  var exports = {
+    doRecord: doRecord
+  };
+
+  // handles displaying a textarea dialog, checks for proper JSON,
+  //   and delegates new value submission to passed function
+  function doRecord(title, value, opFunction) {
+    var div = document.createElement("div");
+    var form = document.createElement("form");
+    var input = document.createElement("textarea");
+    input.cols = "50";
+    input.rows = "10";
+    input.value = value;
+    form.appendChild(input);
+    div.appendChild(form);
+    jQuery(div).dialog({
+      title: title,
+      modal: true,
+      width: "60%",
+      buttons: [
+        {
+          text: "OK",
+          click: function() {
+            var value = jQuery(this).find("textarea").val();
+            try {
+              value = JSON.parse(value);
+            }
+            catch (e) {
+              alert("JSON not properly formatted.\n\n" + e + "\n\nPlease try again.");
+              return;
+            }
+            jQuery(this).dialog("close");
+            opFunction(value);
+          }
+        },{
+          text: "Cancel",
+          click: function() {
+            jQuery(this).dialog("close");
+          }
+        }
+      ]
+    });
+  }
+
+  return exports;
+
+})();
+
+// entry component renders one record row and handles record-specific actions
 var Entry = React.createClass({
   modifyRecord: function(event) {
     var id = this.props.id;
-    doRecord("Modify Record", JSON.stringify(this.props.data, undefined, 2),
-      function(value) { ActionCreator.modifyRecord(id, value); });
+    var ac = this.props.ac;
+    ComponentUtil.doRecord("Modify Record", JSON.stringify(this.props.data, undefined, 2),
+      function(value) { ac.modifyRecord(id, value); });
   },
   deleteRecord: function(event) {
     if (confirm("Are you sure you want to delete record " + this.props.id + "?")) {
-      ActionCreator.deleteRecord(this.props.id);
+      this.props.ac.deleteRecord(this.props.id);
     }
   },
   render: function() {
@@ -75,18 +92,21 @@ var Entry = React.createClass({
   }
 });
 
+// entry list component renders entry table and handles 'global' actions
 var EntryList = React.createClass({
   addRecord: function() {
-    doRecord("Add Record", "", function(value) { ActionCreator.addRecord(value); });
+    var ac = this.props.ac;
+    ComponentUtil.doRecord("Add Record", "", function(value) { ac.addRecord(value); });
   },
   resetData: function() {
     if (confirm("Are you sure you want to restore the above data to its original state?")) {
-      ActionCreator.resetData();
+      this.props.ac.resetData();
     }
   },
   render: function() {
     var keys = Object.keys(this.props.data);
     var dataMap = this.props.data;
+    var ac = this.props.ac;
     return (
       <div>
         <h3>JSON Record Store</h3>
@@ -102,7 +122,7 @@ var EntryList = React.createClass({
           </thead>
           <tbody>
             {keys.map(function(key) {
-              return ( <Entry key={key} id={key} data={dataMap[key]}/> );})}
+              return ( <Entry key={key} id={key} data={dataMap[key]} ac={ac}/> );})}
           </tbody>
         </table>
         <hr/>
@@ -114,10 +134,34 @@ var EntryList = React.createClass({
 });
 
 //**************************************************
+// View-Controller (wraps primary page component)
+//**************************************************
+
+var ViewController = React.createClass({
+  // get state from store for initial render
+  getInitialState: function() {
+    return this.props.store.get();
+  },
+  // register with store to receive update notifications
+  componentDidMount: function() {
+    this.props.store.register(this.update);
+  },
+  // handle update notifications from the store
+  update: function(store) {
+    this.replaceState(store.get());
+  },
+  // render is simply a wrapper around EntryList, passing latest state
+  render: function() {
+    return ( <EntryList data={this.state} ac={this.props.ac}/> );
+  }
+});
+
+//**************************************************
 // Dispatcher
 //**************************************************
 
-var Dispatcher = new Flux.Dispatcher();
+// use the raw Flux dispatcher
+var Dispatcher = Flux.Dispatcher;
 
 // types of actions sent through the dispatcher
 var ActionType = {
@@ -128,158 +172,188 @@ var ActionType = {
 }
 
 //**************************************************
-// Model
+// Store
 //**************************************************
 
-var Model = {
+var Store = function(dispatcher, initialValue) {
 
-  model: {},
+  // public methods
+  var exports = {
+    register: register,
+    get: get
+  };
 
-  registeredCallbacks: [],
+  // private data
+  var _data = initialValue;
+  var _registeredCallbacks = [];
 
-  register: function(callback) {
-    Model.registeredCallbacks.push(callback);
-  },
+  // returns current store state
+  function get() {
+    return _data;
+  }
 
-  updateRegisteredViews: function() {
-    Model.registeredCallbacks.forEach(function(func) { func(this); });
-  },
+  // registers a function to call when state has changed
+  function register(callback) {
+    _registeredCallbacks.push(callback);
+  }
 
-  handleAction: function(payload) {
-    // update the model here
-    // data in form { id: int, value: string }
+  // calls all registered functions, passing itself as only param
+  function updateRegisteredViews() {
+    _registeredCallbacks.forEach(function(func) { func(exports); });
+  }
+
+  // handles actions from the dispatcher
+  function handleAction(payload) {
+    // payload delivered is object in the form:
+    //   { actionType: ActionType, data: { id: Number, value: Any } }
     switch(payload.actionType) {
       case ActionType.ADD_ACTION:
-        Model.model[payload.data.id] = payload.data.value;
+        _data[payload.data.id] = payload.data.value;
         break;
       case ActionType.MODIFY_ACTION:
-        Model.model[payload.data.id] = payload.data.value;
+        _data[payload.data.id] = payload.data.value;
         break;
       case ActionType.DELETE_ACTION:
-        delete Model.model[payload.data.id];
+        delete _data[payload.data.id];
         break;
       case ActionType.RESET_ACTION:
-        Model.model = payload.data;
+        _data = payload.data.value;
       default:
-        // this model does not support other actions
+        // this store does not support other actions
     }
     // then alert registered views of change
-    Model.updateRegisteredViews();
-  },
-
-  initialize: function(initialValue) {
-    Model.model = initialValue;
-    Dispatcher.register(Model.handleAction);
-  },
-
-  get: function() {
-    return Model.model;
+    updateRegisteredViews();
   }
+
+  // register action handler with the dispatcher
+  dispatcher.register(handleAction);
+
+  return exports;
 }
-
-//**************************************************
-// Controller-View (wraps primary page component)
-//**************************************************
-
-var ControllerView = React.createClass({
-  getInitialState: function() {
-    return this.props.model.get();
-  },
-  componentDidMount: function() {
-    this.props.model.register(this.update);
-  },
-  update: function() {
-    this.replaceState(this.props.model.get());
-  },
-  render: function() {
-    return ( <EntryList data={this.state}/> );
-  }
-});
 
 //**************************************************
 // Action-Creator functions interact with the server
 //**************************************************
 
-var ActionCreator = {
-  addRecord: function(value) {
+var ActionCreator = function(serviceUrl, dispatcher) {
+
+  // public methods
+  var exports = {
+    addRecord: addRecord,
+    modifyRecord: modifyRecord,
+    deleteRecord: deleteRecord,
+    resetData: resetData
+  };
+
+  // private data
+  var _serviceUrl = serviceUrl;
+  var _dispatcher = dispatcher;
+
+  function addRecord(value) {
     jQuery.ajax({
       type: "POST",
-      url: ServiceUrl,
+      url: _serviceUrl,
       contentType: 'application/json; charset=UTF-8',
       data: JSON.stringify(value),
       dataType: "json",
       success: function(data, textStatus, jqXHR) {
-        Dispatcher.dispatch({ actionType: ActionType.ADD_ACTION, data: { id: data.id, value: value }});
+        _dispatcher.dispatch({ actionType: ActionType.ADD_ACTION, data: { id: data.id, value: value }});
       },
       error: function(jqXHR, textStatus, errorThrown ) {
         alert("Error: Unable to create new record");
       }
     });
-  },
-  modifyRecord: function(id, value) {
+  }
+
+  function modifyRecord(id, value) {
     jQuery.ajax({
       type: "PUT",
-      url: ServiceUrl + "/" + id,
+      url: _serviceUrl + "/" + id,
       contentType: 'application/json; charset=UTF-8',
       data: JSON.stringify(value),
       success: function(data, textStatus, jqXHR) {
-        Dispatcher.dispatch({ actionType: ActionType.MODIFY_ACTION, data: { id: id, value: value }});
+        _dispatcher.dispatch({ actionType: ActionType.MODIFY_ACTION, data: { id: id, value: value }});
       },
       error: function(jqXHR, textStatus, errorThrown ) {
         alert("Error: Unable to update record with ID " + id);
       }
     });
-  },
-  deleteRecord: function(id) {
+  }
+
+  function deleteRecord(id) {
     jQuery.ajax({
       type: "DELETE",
-      url: ServiceUrl + "/" + id,
+      url: _serviceUrl + "/" + id,
       success: function(data, textStatus, jqXHR) {
-        Dispatcher.dispatch({ actionType: ActionType.DELETE_ACTION, data: { id: id }});
+        _dispatcher.dispatch({ actionType: ActionType.DELETE_ACTION, data: { id: id }});
       },
       error: function(jqXHR, textStatus, errorThrown ) {
         alert("Error: Unable to delete record with ID " + id);
       }
     });
-  },
-  resetData: function() {
+  }
+
+  function resetData() {
     jQuery.ajax({
       type: "GET",
-      url: ServiceUrl + "/reset",
+      url: _serviceUrl + "/reset",
       data: { expandRecords: true },
       success: function(data, textStatus, jqXHR) {
-        Dispatcher.dispatch({ actionType: ActionType.RESET_ACTION, data: data });
+        _dispatcher.dispatch({ actionType: ActionType.RESET_ACTION, data: { value: data } });
       },
       error: function(jqXHR, textStatus, errorThrown ) {
         alert("Error: Unable to reset record data");
       }
     });
   }
+
+  return exports;
 }
 
 //**************************************************
 // Page Initialization
 //**************************************************
 
-var Sample = {
-  loadPage: function() {
+// singleton
+var Page = (function() {
+
+  var exports = {
+    loadPage: loadPage
+  };
+
+  function wireApplication(serviceUrl, initialData) {
+
+    // create dispatcher
+    var dispatcher = new Dispatcher();
+
+    // initialize the store with the fetched state
+    var store = new Store(dispatcher, initialData);
+
+    // create action creator container
+    var ac = new ActionCreator(serviceUrl, dispatcher);
+
+    // create top-level view-controller
+    React.render(<ViewController store={store} ac={ac}/>, document.body);
+  }
+
+  function loadPage(serviceUrl) {
     jQuery.ajax({
       type: "GET",
-      url: ServiceUrl,
+      url: serviceUrl,
       data: { expandRecords: true },
       dataType: "json",
       success: function(data) {
-        // initialize the model with the fetched state
-        Model.initialize(data);
-        // create top-level view-controller
-        React.render(<ControllerView model={Model}/>, document.body);
+        wireApplication(serviceUrl, data);
       },
       error: function(jqXHR, textStatus, errorThrown ) {
         alert("Error: Unable to load initial data");
       }
     });
   }
-};
 
-Sample.loadPage();
+  return exports;
+
+})();
+
+Page.loadPage(ServiceUrl);
 
